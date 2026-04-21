@@ -1,0 +1,6 @@
+.agents/
+.config/
+.local/
+.replit
+__pycache__/
+test_load.py

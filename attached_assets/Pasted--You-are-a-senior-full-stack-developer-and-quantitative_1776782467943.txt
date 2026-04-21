@@ -1,0 +1,226 @@
+
+
+
+You are a senior full-stack developer and quantitative analyst. I have an existing Flask + Python web application called "Quantum Algo" — a crypto and stock market analysis dashboard. Below is the complete current codebase. Your task is to perform a full upgrade of this project, rewriting both app.py and templates/index.html with all the improvements listed. Do NOT simplify or remove any existing functionality — only extend and improve it.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CURRENT PROJECT STRUCTURE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Files present:
+- app.py                  (Flask backend)
+- templates/index.html    (Single-page frontend)
+- arima_model.pkl         (Trained ARIMA model)
+- prophet_model.pkl       (Trained Prophet model)
+- lstm_model.h5           (Trained LSTM model — currently UNUSED)
+- minmax_scaler.pkl       (MinMaxScaler for LSTM input normalization)
+- requirements.txt
+
+[PASTE YOUR CURRENT app.py CONTENTS HERE]
+[PASTE YOUR CURRENT index.html CONTENTS HERE]
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BACKEND UPGRADES — app.py
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. LSTM PREDICTION ROUTE
+   - Add a new Flask route: POST /predict/lstm
+   - Load lstm_model.h5 using tensorflow.keras.models.load_model()
+   - Load minmax_scaler.pkl to normalize input
+   - Accept JSON: { "ticker": "BTC-USD", "days": 30 }
+   - Fetch the last 60 days of closing prices from yfinance for the given ticker
+   - Normalize using the loaded scaler, reshape to (1, 60, 1)
+   - Run recursive multi-step forecasting: predict 1 day, append to sequence, predict next, repeat for `days` iterations
+   - Inverse transform results back to USD prices
+   - Return: { "forecast": [{"day": 1, "predicted_price": 12345.67}, ...] }
+
+2. TECHNICAL INDICATORS API
+   - Extend the existing /api/market-data POST route to also return:
+     a) RSI (14-period): use pandas-ta or compute manually
+        Formula: RS = avg_gain / avg_loss over 14 periods, RSI = 100 - (100 / (1 + RS))
+        Return the last 90 days of RSI values as: { "rsi_dates": [...], "rsi_values": [...] }
+        Also return current_rsi (latest single value) and rsi_signal: "Overbought" (>70), "Oversold" (<30), or "Neutral"
+     b) MACD (12, 26, 9):
+        EMA12 = close.ewm(span=12).mean()
+        EMA26 = close.ewm(span=26).mean()
+        MACD line = EMA12 - EMA26
+        Signal line = MACD.ewm(span=9).mean()
+        Histogram = MACD - Signal
+        Return last 90 days: { "macd_dates": [...], "macd_line": [...], "signal_line": [...], "histogram": [...] }
+     c) Bollinger Bands (20-period, 2 std devs):
+        Middle band = 20-day SMA
+        Upper band = SMA + 2 * std
+        Lower band = SMA - 2 * std
+        Return last 90 days: { "bb_upper": [...], "bb_middle": [...], "bb_lower": [...] }
+     d) 52-week high and 52-week low from 1 year of yfinance data
+     e) Market cap (from stock.info["marketCap"] if available, else "N/A")
+
+3. IMPROVED TRADING SIGNAL LOGIC
+   - Replace the simple ±5% 7-day check with a confluence-based signal:
+     a) RSI signal: Oversold (<30) = bullish, Overbought (>70) = bearish
+     b) MACD signal: MACD line crosses above signal line = bullish, crosses below = bearish
+     c) Price vs Bollinger: price below lower band = bullish, above upper band = bearish
+   - Score system: each bullish indicator = +1, each bearish = -1
+   - Final signal: score >= 2 = "BUY", score <= -2 = "SELL", else "HOLD"
+   - Return a detailed breakdown: { "signal": "BUY", "score": 2, "breakdown": { "rsi": "Oversold (bullish)", "macd": "Bullish crossover", "bollinger": "Neutral" } }
+
+4. NEWS & SENTIMENT ROUTE
+   - Add GET /api/news?ticker=BTC-USD
+   - Fetch the last 10 news headlines from Yahoo Finance RSS:
+     URL: https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}®ion=US&lang=en-US
+   - Parse XML using feedparser or xml.etree.ElementTree
+   - For each article return: { "title": "...", "link": "...", "published": "...", "source": "Yahoo Finance" }
+   - Do basic keyword sentiment: if title contains bullish words (surge, rally, gain, high, record, buy) score = +1, bearish words (crash, drop, fall, low, loss, sell, fear) score = -1, else 0
+   - Return average sentiment score and label: "Positive", "Negative", or "Neutral"
+
+5. MULTI-TICKER COMPARISON ROUTE
+   - Add POST /api/compare
+   - Accept JSON: { "tickers": ["BTC-USD", "ETH-USD", "AAPL"] }
+   - For each ticker fetch last 3 months of data from yfinance
+   - Normalize each to percentage return from day 1 (so they're comparable on one chart)
+   - Return: { "dates": [...], "series": [ { "ticker": "BTC-USD", "returns": [...] }, ... ] }
+
+6. IN-MEMORY CACHING
+   - Use functools.lru_cache or a simple Python dict with timestamps
+   - Cache /api/market-data responses for 60 seconds per ticker
+   - Cache /api/news responses for 5 minutes per ticker
+   - Add a cache-hit header: X-Cache: HIT or MISS
+
+7. PORTFOLIO TRACKER ROUTES
+   - Add POST /api/portfolio/add: accept { "ticker": "AAPL", "shares": 10, "buy_price": 150.00 }
+     Store in a server-side dict (in-memory for now, keyed by ticker)
+   - Add GET /api/portfolio: return all holdings with current price from yfinance, current value, P&L ($ and %), total portfolio value
+   - Add DELETE /api/portfolio/remove: accept { "ticker": "AAPL" }, remove from dict
+
+8. REQUIREMENTS.TXT UPDATE
+   - Add: tensorflow, pandas-ta, feedparser
+   - Ensure all existing deps are preserved
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FRONTEND UPGRADES — templates/index.html
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Keep the same dark theme (--bg-dark: #0b0e14, --accent-green: #00ff88). Upgrade everything listed below.
+
+1. EXPAND THE ASSET DROPDOWN
+   Add the following new options to the existing select#globalTicker:
+   Crypto: XRP-USD, ADA-USD, AVAX-USD, DOT-USD, MATIC-USD, LTC-USD, LINK-USD, UNI-USD
+   Stocks: AMD, INTC, NFLX, DIS, JPM, BAC, WMT, TSM, BABA, SHOP, COIN, HOOD
+   Indian stocks (NSE): RELIANCE.NS, TCS.NS, INFY.NS, HDFCBANK.NS, WIPRO.NS
+   Indices: ^VIX (Volatility Index), ^GSPC (S&P 500 raw), ^DJI (Dow Jones raw)
+   Add a text input below the dropdown: "Or type any ticker manually" with id="customTicker"
+   When a custom ticker is typed and non-empty, it overrides the dropdown value on sync.
+
+2. COMMAND CENTER TAB — add 3 more stat cards:
+   - 52-Week High (id="ui-52high")
+   - 52-Week Low (id="ui-52low")
+   - Market Cap (id="ui-mktcap")
+   - Current RSI value with color: green if <30, red if >70, white otherwise (id="ui-rsi")
+   - MACD Signal text (id="ui-macd-signal"): "Bullish Crossover" / "Bearish Crossover" / "No Signal"
+   Also add a small "Auto-Refresh" toggle (checkbox) in the header bar. When enabled, call fetchLiveMarketData() every 30 seconds. Show a pulsing green dot next to the ticker name when auto-refresh is active.
+
+3. MARKET ANALYSIS TAB — complete overhaul:
+   a) Replace the single line chart with a candlestick chart using TradingView Lightweight Charts:
+      CDN: https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js
+      Fetch OHLCV data from yfinance (add open, high, low, close, volume to the /api/market-data response)
+      Render a candlestick series with green/red candles
+      Add a volume histogram below it
+      Add time range buttons: 1W, 1M, 3M (filter the data client-side by date)
+   b) Add RSI panel below the candlestick chart:
+      Line chart, red dashed line at 70, green dashed line at 30
+      Label: "RSI (14)"
+   c) Add MACD panel below RSI:
+      MACD line (blue), Signal line (orange), Histogram bars (green/red based on positive/negative)
+      Label: "MACD (12, 26, 9)"
+   d) Add Bollinger Bands as an overlay on the candlestick chart:
+      Upper band (dashed red line), Middle band (dashed gray), Lower band (dashed green)
+      Toggle checkbox: "Show Bollinger Bands"
+
+4. MODEL COMPARISON TAB — upgrade the table:
+   - Add a 4th row for LSTM with its error metric
+   - Add a visual accuracy bar for each model (CSS width % based on inverse of error)
+   - Add a "Best Model" badge on the lowest-error row
+   - Add a brief description below the table explaining what each model is best for
+
+5. PREDICTIVE ENGINE TAB — upgrades:
+   - Add "LSTM (Deep Learning)" to the model dropdown (value="lstm")
+   - When LSTM is selected and Run Inference is clicked, call POST /predict/lstm with the currently selected global ticker and days
+   - Show a confidence band around the prediction line (upper = predicted * 1.05, lower = predicted * 0.95) as a shaded area on the chart
+   - Add a table below the chart showing: Day, Predicted Price, Change from today ($ and %), formatted with color (green if up, red if down)
+   - Add a "Download CSV" button that exports the forecast table as a .csv file
+
+6. STRATEGY & SIGNALS TAB — major upgrade:
+   - Keep the big BUY/SELL/HOLD signal display
+   - Below it, add a "Signal Breakdown" section showing a 3-row table:
+     Indicator | Value | Signal
+     RSI       | 28.5  | Oversold (Bullish) ✅
+     MACD      | Cross | Bullish Crossover ✅
+     Bollinger | Below | Below Lower Band ✅
+   - Add a "Confluence Score" bar: e.g. "+2 / 3 indicators bullish"
+   - Color each row: green background if bullish, red if bearish, yellow if neutral
+
+7. NEWS & SENTIMENT TAB — new tab (6th tab):
+   - Add to sidebar:  News & Sentiment
+   - On tab load (or when sync button is clicked), call GET /api/news?ticker={globalTicker}
+   - Display overall sentiment badge at top: "Positive 😊" / "Negative 😟" / "Neutral 😐" with matching color
+   - Show a scrollable list of news cards, each containing:
+     - Headline (clickable, opens link in new tab)
+     - Source and published date
+     - Sentiment icon: ↑ (bullish), ↓ (bearish), → (neutral)
+   - Add a "Refresh News" button
+
+8. PORTFOLIO TAB — new tab (7th tab):
+   - Add to sidebar:  My Portfolio
+   - Add form: Ticker input, Shares input, Buy Price input, "Add to Portfolio" button
+     On click, calls POST /api/portfolio/add, then refreshes the portfolio
+   - Show a Chart.js doughnut/pie chart of portfolio allocation by ticker
+   - Show a table: Ticker | Shares | Buy Price | Current Price | Current Value | P&L ($) | P&L (%)
+     Color P&L green if positive, red if negative
+   - Show total portfolio value and total P&L at the bottom in large text
+   - Add a remove button (🗑) on each row that calls DELETE /api/portfolio/remove
+
+9. COMPARISON TAB — new tab (8th tab):
+   - Add to sidebar:  Asset Comparison
+   - Ticker multi-select or comma-separated input: "Compare tickers (e.g. BTC-USD, ETH-USD, AAPL)"
+   - "Compare" button calls POST /api/compare
+   - Renders a Chart.js line chart showing normalized % returns for all tickers from day 1
+   - Each ticker gets a different line color
+   - Legend shows each ticker with its total return % for the period
+
+10. MOBILE RESPONSIVENESS:
+    - Add a hamburger menu button (☰) visible only on screens < 768px
+    - On mobile, sidebar should be hidden by default and slide in when hamburger is clicked
+    - Add overlay backdrop when sidebar is open on mobile
+    - Make all stat card grids stack to 1 column on mobile (col-12 on xs)
+    - Make all tables horizontally scrollable on mobile: overflow-x: auto wrapper
+
+11. UX POLISH:
+    - Replace all alert() calls with a toast notification system:
+      Create a #toast-container fixed at bottom-right
+      Function showToast(message, type) where type = "success" | "error" | "warning"
+      Auto-dismiss after 4 seconds with fade-out animation
+    - Add skeleton loading placeholders for all stat cards while data is loading
+      (gray animated pulse blocks that replace the --- values)
+    - Add a global loading bar at the top of the page (thin green line) that animates during any fetch
+    - All chart canvases should show "No data — click Sync to load" placeholder text before first load
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OUTPUT FORMAT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Produce two complete files, clearly delimited:
+
+=== FILE: app.py ===
+[complete upgraded app.py]
+=== END app.py ===
+
+=== FILE: templates/index.html ===
+[complete upgraded index.html]
+=== END index.html ===
+
+Also produce:
+=== FILE: requirements.txt ===
+[complete updated requirements.txt]
+=== END requirements.txt ===
+
+Do not truncate any section. Do not use placeholder comments like "# rest of code here". Every function must be fully implemented. All JavaScript must be fully written — no "// TODO" stubs.
